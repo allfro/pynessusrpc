@@ -6,7 +6,7 @@ from setuptools import setup, find_packages
 setup(
     name='pynessusrpc',
     author='Nadeem Douba',
-    version='0.1',
+    version='0.2',
     author_email='ndouba@gmail.com',
     description='Python Nessus RPC client.',
     license='GPL',

@@ -4,14 +4,14 @@ from xml.etree.cElementTree import ElementTree
 from httplib import HTTPSConnection
 from urllib import urlencode
 from random import randint
-
+from re import match
 
 __author__ = 'Nadeem Douba'
 __copyright__ = 'Copyright 2012, PyNessus RPC Project'
 __credits__ = []
 
 __license__ = 'GPL'
-__version__ = '0.1'
+__version__ = '0.2'
 __maintainer__ = 'Nadeem Douba'
 __email__ = 'ndouba@gmail.com'
 __status__ = 'Development'
@@ -142,6 +142,8 @@ class NessusSessionException(Exception):
 class NessusXmlRpcClient(object):
 
     def __init__(self, username='', password='', host='localhost', port=8834, token=None):
+        self.server = host
+        self.port = port
         self.h = HTTPSConnection(host, port)
         self.token = token
         if token is None:
@@ -183,7 +185,8 @@ class NessusXmlRpcClient(object):
             if isinstance(f, basestring):
                 f = file(f, mode='wb')
             f.write(r.read())
-            return f.close()
+            f.close()
+            return f.name
         elif r.status == 403:
             self.token = None
             raise NessusSessionException('Session timed out.')
@@ -482,7 +485,8 @@ class FamilyPreferences(dict):
 
 class Policy(object):
 
-    def __init__(self, e):
+    def __init__(self, rpc, e):
+        self.rpc = rpc
         self.name = e.find('policyName').text
         self._id = e.find('policyID').text
         self.shared = e.find('visibility').text == 'shared'
@@ -514,6 +518,9 @@ class Policy(object):
                 d.update(self.families[f].plugins)
         return d
 
+    def download(self, file):
+        return self.rpc.save(NessusXmlRpcCmd.PolicyDownload, file, policy_id=self.id)
+
     def __repr__(self):
         return '< Policy(%s) object at 0x%x >' % (repr(self.name), id(self))
 
@@ -525,7 +532,7 @@ class PolicyManager(NessusManager):
 
     @property
     def list(self):
-        return [Policy(p) for p in self.rpc.post(NessusXmlRpcCmd.PolicyList).findall('contents/policies/policy')]
+        return [Policy(self.rpc, p) for p in self.rpc.post(NessusXmlRpcCmd.PolicyList).findall('contents/policies/policy')]
 
     def update(self, policy):
         if isinstance(policy, Policy):
@@ -534,7 +541,7 @@ class PolicyManager(NessusManager):
 
     def copy(self, policy):
         if isinstance(policy, Policy):
-            return Policy(self.rpc.post(NessusXmlRpcCmd.PolicyCopy, policy_id=policy.id).find('contents/policy'))
+            return Policy(self.rpc, self.rpc.post(NessusXmlRpcCmd.PolicyCopy, policy_id=policy.id).find('contents/policy'))
         raise ValueError('Expected Policy object not %s', repr(type(policy)))
 
     def delete(self, policy):
@@ -544,11 +551,12 @@ class PolicyManager(NessusManager):
 
     def download(self, policy, file):
         if not isinstance(policy, Policy):
-            raise ValueError('Expected Policy object not %s' % type(policy))
-        self.rpc.save(NessusXmlRpcCmd.PolicyDownload, file, policy_id=policy.id)
+            raise ValueError('Expected Policy object not %s' % type(policy).__name__)
+        return self.rpc.save(NessusXmlRpcCmd.PolicyDownload, file, policy_id=policy.id)
 
     def add(self, name, comments='', shared=False):
         return Policy(
+            self.rpc,
             self.rpc.post(
                 NessusXmlRpcCmd.PolicyAdd,
                 policy_name=name,
@@ -636,12 +644,99 @@ class ReportAttribute(object):
 
     def __init__(self, e):
         self.name = e.find('name').text
-        self.readablename = e.find('readable_name').text
+        self.readable_name = e.find('readable_name').text
         self.control = _dictify(e.find('control'))
+        if 'list' in self.control:
+            self.control['list'] = _dictify(e.find('control/list'))['entry']
         self.operators = _dictify(e.find('operators'))['operator']
 
     def __repr__(self):
-        return '< ReportAttribute(%s) at 0x%x >' % (self.name, id(self))
+        return '< ReportAttribute(%s) at 0x%x >' % (self.readable_name, id(self))
+
+
+class ReportFilter(object):
+
+    def __init__(self, attribute, operator, value):
+        self._validator = None
+        if isinstance(attribute, ReportAttribute):
+            self._validator = attribute
+            attribute = attribute.name
+        self._filter = attribute
+        self._quality = None
+        self.quality = operator
+        self._value = None
+        self.value = value
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, value):
+        if self._validator is not None:
+            if self._validator.control['type'] == 'entry' and\
+               match(self._validator.control['regex'], value) is None:
+                raise ValueError('Invalid filter value. Must be %s' % self._validator.control['readable_regex'])
+            elif self._validator.control['type'] == 'dropdown' and\
+                 value not in self._validator.control['list']:
+                raise ValueError('Invalid filter value. Must be one of %s.' % repr(self._validator.control['list']))
+            elif self._validator.control['type'] == 'datefield' and\
+                 match('^\d{4}/(0[1-9]|1[012])/(0[1-9]|[12][0-9]|3[01])$', value) is None:
+                raise ValueError('Invalid filter value. Must be a date in format YYYY/MM/DD.')
+        self._value = value
+
+    @property
+    def quality(self):
+        return self._quality
+
+    @quality.setter
+    def quality(self, operator):
+        operator = operator.lower()
+        if self._validator is not None and operator not in self._validator.operators:
+            raise ValueError('Operator must be one of %s' % repr(self._validator.operators))
+        self._quality = operator
+
+    @property
+    def filter(self):
+        return self._filter
+
+    def __repr__(self):
+        return '< ReportFilter(%s %s %s) at 0x%x >' % (self.filter, self.quality, self.value, id(self))
+
+
+class ReportFilterQuery(tuple):
+
+    def __new__(cls, *filters, **kwargs):
+        for a in filters:
+            if not isinstance(a, ReportFilter):
+                raise ValueError('Expected type ReportFilter got %s instead' % repr(type(a).__name__))
+        self = tuple.__new__(ReportFilterQuery, filters)
+        self._type = None
+        self.query_type = kwargs.get('query_type', 'and')
+        return self
+
+    @property
+    def query_type(self):
+        return self._type
+
+    @query_type.setter
+    def query_type(self, query_type):
+        if query_type.lower() not in ['or', 'and']:
+            raise ValueError("Query type must be either 'or' or 'and'.")
+        self._type = query_type
+
+    def __repr__(self):
+        return '< ReportFilterQuery(query_type=%s) at 0x%x >' % (repr(self.query_type), id(self))
+
+    def to_dict(self):
+        d = {
+            'filter.search_type' : self.query_type
+        }
+        for i, f in enumerate(self):
+            d['filter.%d.filter' % i] = f.filter
+            d['filter.%d.quality' % i] = f.quality
+            d['filter.%d.value' % i] = f.value
+        return d
 
 
 class Report(object):
@@ -662,6 +757,19 @@ class Report(object):
         for v in self.rpc.post(
             NessusXmlRpcCmd.Report2Vulnerabilities,
             report=self.uuid
+        ).findall('contents/vulnList/vulnerability'):
+            vuln = Vulnerability(self.rpc, self.uuid, v)
+            d[vuln.id] = vuln
+        return d
+
+    def search(self, query):
+        if not isinstance(query, ReportFilterQuery):
+            raise ValueError('Expected ReportFilterQuery got %s instead.' % repr(type(query).__name__))
+        d = {}
+        for v in self.rpc.post(
+            NessusXmlRpcCmd.Report2Vulnerabilities,
+            report=self.uuid,
+            **query.to_dict()
         ).findall('contents/vulnList/vulnerability'):
             vuln = Vulnerability(self.rpc, self.uuid, v)
             d[vuln.id] = vuln
@@ -705,15 +813,19 @@ class Report(object):
     def delete(self):
         self.rpc.post(NessusXmlRpcCmd.ReportDelete, report=self.uuid)
 
+    def download(self, file, v1=False):
+        return self.rpc.save(NessusXmlRpcCmd.FileReportDownload, file, report=self.uuid, v1=v1)
+
     @property
     def attributes(self):
-        return [
-        ReportAttribute(r)
+        d = {}
         for r in self.rpc.post(
-            NessusXmlRpcCmd.ReportAttributesList,
-            report=self.uuid
-        ).findall('contents/reportAttributes/attribute')
-        ]
+                NessusXmlRpcCmd.ReportAttributesList,
+                report=self.uuid
+            ).findall('contents/reportAttributes/attribute'):
+            a = ReportAttribute(r)
+            d[a.name] = a
+        return d
 
     def __repr__(self):
         return '< Report(%s) at 0x%x >' % (repr(self.name), id(self))
@@ -800,3 +912,8 @@ class ReportManager(NessusManager):
             Report(self.rpc, r.find('name').text, r.find('readableName').text) for r in
             self.rpc.post(NessusXmlRpcCmd.ReportList).findall('contents/reports/report')
         ]
+
+    def download(self, report, file):
+        if not isinstance(report, Report):
+            raise ValueError('Expected Report object got %s instead' % type(report).__name__)
+        return self.rpc.save(NessusXmlRpcCmd.PolicyDownload, file, report=report.uuid)
