@@ -11,7 +11,7 @@ __copyright__ = 'Copyright 2012, PyNessus RPC Project'
 __credits__ = []
 
 __license__ = 'GPL'
-__version__ = '0.2'
+__version__ = '0.3'
 __maintainer__ = 'Nadeem Douba'
 __email__ = 'ndouba@gmail.com'
 __status__ = 'Development'
@@ -46,7 +46,9 @@ __all__ = [
 
 
 def _empty(val):
-    return val if val is not None else ''
+    if val is None or val.text is None:
+        return ''
+    return val.text
 
 
 def _dictify(e):
@@ -339,7 +341,7 @@ class ServerPreferences(dict):
                 map(
                     lambda x: (
                         x.find('name').text,
-                        _empty(x.find('value').text)
+                        _empty(x.find('value'))
                         ),
                     e.findall('preference')
                 )
@@ -350,14 +352,14 @@ class ServerPreferences(dict):
 class PluginPreference(object):
 
     def __init__(self, e):
-        self.options = _empty(e.find('preferenceValues').text)
+        self.options = _empty(e.find('preferenceValues'))
         self.options = [] if not self.options else self.options.split(';')
         self.name = e.find('pluginName').text
         self.id = e.find('pluginId').text
         self.param = e.find('fullName').text
         self.type = e.find('preferenceType').text
         sv = e.find('selectedValue')
-        self._value = _empty(sv.text if sv is not None else '')
+        self._value = _empty(sv)
 
     @property
     def value(self):
@@ -490,7 +492,7 @@ class Policy(object):
         self.name = e.find('policyName').text
         self._id = e.find('policyID').text
         self.shared = e.find('visibility').text == 'shared'
-        self.comments = _empty(e.find('policyContents/policyComments').text)
+        self.comments = _empty(e.find('policyContents/policyComments'))
         self.owner = e.find('policyOwner').text
         p = e.find('policyContents/Preferences')
         self.serverprefs = ServerPreferences(p.find('ServerPreferences'))
