@@ -156,7 +156,7 @@ class NessusXmlRpcClient(object):
             except AttributeError:
                 raise NessusSessionException('Failed to login.')
         else:
-            self.timezones
+            self.feed
 
     def post(self, cmd, **kwargs):
         kwargs.update({'seq':randint(0,65535)})
