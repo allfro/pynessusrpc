@@ -492,7 +492,9 @@ class Policy(object):
         self.name = e.find('policyName').text
         self._id = e.find('policyID').text
         self.shared = e.find('visibility').text == 'shared'
-        self.comments = _empty(e.find('policyContents/policyComments'))
+        comments = e.find('policyContents/policyComments')
+        if comments:
+            self.comments = _empty(comments.text)
         self.owner = e.find('policyOwner').text
         p = e.find('policyContents/Preferences')
         self.serverprefs = ServerPreferences(p.find('ServerPreferences'))
